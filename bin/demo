@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+# Демонстрационная программа для simple_currency_cacher
+# Запуск: ruby bin/demo
+
+require_relative '../lib/simple_currency_cacher'
+
+puts "=== SimpleCurrencyCacher Demo ==="
+
+print "Сумма: "
+amount = Float(gets.strip) rescue nil
+unless amount
+  puts "Неправильная сумма"
+  exit 1
+end
+
+print "Из (например, USD): "
+from = gets.strip.upcase
+print "В (например, RUB): "
+to = gets.strip.upcase
+
+begin
+  result = SimpleCurrencyCacher.convert(amount, from: from, to: to)
+  puts "\n#{amount} #{from} = #{result.round(4)} #{to}"
+rescue SimpleCurrencyCacher::CurrencyNotFoundError => e
+  puts "Ошибка: #{e.message}"
+rescue SimpleCurrencyCacher::NetworkError => e
+  puts "Ошибка: #{e.message}"
+end
