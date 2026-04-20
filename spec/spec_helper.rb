@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "simple_currency_cacher"
+require "simple_currency_bot"
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure

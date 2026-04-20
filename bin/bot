@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+
+require 'simple_currency_bot'
+
+# Получаем токен из переменной окружения или аргумента командной строки
+token = ENV['TELEGRAM_BOT_TOKEN'] || ARGV[0]
+
+if token.nil? || token.empty?
+  puts "Укажите токен бота через переменную окружения TELEGRAM_BOT_TOKEN или как аргумент командной строки"
+  exit 1
+end
+
+bot = SimpleCurrencyBot::Bot.new(token)
+puts "Запуск бота..."
+bot.start
