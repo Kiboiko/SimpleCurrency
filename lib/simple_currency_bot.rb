@@ -12,23 +12,25 @@ module SimpleCurrencyBot
 
     def start
       Telegram::Bot::Client.run(@token) do |bot|
-        bot.listen do |message|
-          handle_message(bot, message)
+        bot.listen do |update|
+          handle_update(bot, update)
         end
       end
     end
 
     private
 
-    def handle_message(bot, message)
+    def handle_update(bot, update)
+      if update.is_a?(Telegram::Bot::Types::Message)
+        handle_text_message(bot, update)
+      elsif update.is_a?(Telegram::Bot::Types::CallbackQuery)
+        handle_callback(bot, update)
+      end
+    end
+
+    def handle_text_message(bot, message)
       chat_id = message.chat.id
       text = message.text
-
-      # Handle callback queries for inline keyboards
-      if message.respond_to?(:callback_query) && message.callback_query
-        handle_callback(bot, message.callback_query)
-        return
-      end
 
       case text
       when '/start'
