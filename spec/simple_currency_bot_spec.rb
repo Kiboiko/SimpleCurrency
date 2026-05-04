@@ -13,7 +13,7 @@ RSpec.describe SimpleCurrencyBot::Bot do
     end
   end
 
-  describe '#handle_message' do
+  describe '#handle_text_message' do
     let(:bot) { double('Telegram::Bot::Client') }
     let(:api) { double('api') }
     let(:message) { double('message') }
@@ -32,7 +32,7 @@ RSpec.describe SimpleCurrencyBot::Bot do
         expect(bot_instance).to receive(:reset_user_state).with(123)
         expect(bot_instance).to receive(:send_welcome_message).with(bot, 123)
 
-        bot_instance.send(:handle_message, bot, message)
+        bot_instance.send(:handle_text_message, bot, message)
       end
     end
 
@@ -42,7 +42,7 @@ RSpec.describe SimpleCurrencyBot::Bot do
       it 'sends help message' do
         expect(bot_instance).to receive(:send_help_message).with(bot, 123)
 
-        bot_instance.send(:handle_message, bot, message)
+        bot_instance.send(:handle_text_message, bot, message)
       end
     end
 
@@ -52,7 +52,17 @@ RSpec.describe SimpleCurrencyBot::Bot do
       it 'starts conversion process' do
         expect(bot_instance).to receive(:start_conversion_process).with(bot, 123)
 
-        bot_instance.send(:handle_message, bot, message)
+        bot_instance.send(:handle_text_message, bot, message)
+      end
+    end
+
+    context 'when message is /rates' do
+      before { allow(message).to receive(:text).and_return('/rates') }
+
+      it 'sends rates message' do
+        expect(bot_instance).to receive(:send_rates_message).with(bot, 123)
+
+        bot_instance.send(:handle_text_message, bot, message)
       end
     end
 
@@ -62,7 +72,68 @@ RSpec.describe SimpleCurrencyBot::Bot do
       it 'handles conversion input' do
         expect(bot_instance).to receive(:handle_conversion_input).with(bot, 123, 'some text')
 
-        bot_instance.send(:handle_message, bot, message)
+        bot_instance.send(:handle_text_message, bot, message)
+      end
+    end
+  end
+
+  describe '#handle_callback' do
+    let(:bot) { double('Telegram::Bot::Client') }
+    let(:api) { double('api') }
+    let(:chat) { double('chat', id: 123) }
+    let(:message) { double('message', chat: chat) }
+    let(:callback) { double('callback', message: message, id: 'callback-id') }
+
+    before do
+      allow(bot).to receive(:api).and_return(api)
+      allow(api).to receive(:answer_callback_query)
+    end
+
+    context 'when callback is /start' do
+      before { allow(callback).to receive(:data).and_return('/start') }
+
+      it 'sends welcome message and resets state' do
+        expect(bot_instance).to receive(:reset_user_state).with(123)
+        expect(bot_instance).to receive(:send_welcome_message).with(bot, 123)
+
+        bot_instance.send(:handle_callback, bot, callback)
+      end
+    end
+
+    context 'when callback is /convert' do
+      before { allow(callback).to receive(:data).and_return('/convert') }
+
+      it 'starts conversion process' do
+        expect(bot_instance).to receive(:start_conversion_process).with(bot, 123)
+
+        bot_instance.send(:handle_callback, bot, callback)
+      end
+    end
+
+    context 'when callback is /rates' do
+      before { allow(callback).to receive(:data).and_return('/rates') }
+
+      it 'sends rates message' do
+        expect(bot_instance).to receive(:send_rates_message).with(bot, 123)
+
+        bot_instance.send(:handle_callback, bot, callback)
+      end
+    end
+
+    context 'when callback is currency selection while waiting_for_from' do
+      before do
+        bot_instance.instance_variable_get(:@user_states)[123] = { step: :waiting_for_from }
+        allow(callback).to receive(:data).and_return('USD')
+      end
+
+      it 'moves to waiting_for_to and sends currency selection' do
+        expect(bot_instance).to receive(:send_currency_selection).with(bot, 123, a_string_including('Выберите валюту'), :to)
+
+        bot_instance.send(:handle_callback, bot, callback)
+
+        state = bot_instance.instance_variable_get(:@user_states)[123]
+        expect(state[:from]).to eq('USD')
+        expect(state[:step]).to eq(:waiting_for_to)
       end
     end
   end
@@ -103,6 +174,27 @@ RSpec.describe SimpleCurrencyBot::Bot do
       )
 
       bot_instance.send(:send_help_message, bot, 123)
+    end
+  end
+
+  describe '#send_rates_message' do
+    let(:bot) { double('Telegram::Bot::Client') }
+    let(:api) { double('api') }
+
+    before do
+      allow(bot).to receive(:api).and_return(api)
+      allow(SimpleCurrencyCacher).to receive(:convert).and_return(75.0)
+    end
+
+    it 'sends a rates message with current exchange rates' do
+      expect(api).to receive(:send_message).with(
+        chat_id: 123,
+        text: a_string_including('Текущие курсы валют'),
+        parse_mode: 'Markdown',
+        reply_markup: an_instance_of(Telegram::Bot::Types::InlineKeyboardMarkup)
+      )
+
+      bot_instance.send(:send_rates_message, bot, 123)
     end
   end
 
@@ -201,11 +293,35 @@ RSpec.describe SimpleCurrencyBot::Bot do
     end
   end
 
-  describe '#reset_user_state' do
-    it 'removes user state' do
-      bot_instance.instance_variable_get(:@user_states)[123] = { some: 'data' }
-      bot_instance.send(:reset_user_state, 123)
-      expect(bot_instance.instance_variable_get(:@user_states)).not_to have_key(123)
+  describe '#parse_direct_conversion' do
+    it 'parses "100 $ ₽" correctly' do
+      result = bot_instance.send(:parse_direct_conversion, '100 $ ₽')
+      expect(result).to eq({ amount: 100.0, from: 'USD', to: 'RUB' })
+    end
+
+    it 'parses "50 € £" correctly' do
+      result = bot_instance.send(:parse_direct_conversion, '50 € £')
+      expect(result).to eq({ amount: 50.0, from: 'EUR', to: 'GBP' })
+    end
+
+    it 'parses "1000 ¥ $" correctly' do
+      result = bot_instance.send(:parse_direct_conversion, '1000 ¥ $')
+      expect(result).to eq({ amount: 1000.0, from: 'JPY', to: 'USD' })
+    end
+
+    it 'parses "200 USD EUR" with currency codes' do
+      result = bot_instance.send(:parse_direct_conversion, '200 USD EUR')
+      expect(result).to eq({ amount: 200.0, from: 'USD', to: 'EUR' })
+    end
+
+    it 'returns nil for invalid format' do
+      result = bot_instance.send(:parse_direct_conversion, 'hello world')
+      expect(result).to be_nil
+    end
+
+    it 'returns nil for unsupported currency' do
+      result = bot_instance.send(:parse_direct_conversion, '100 XYZ ABC')
+      expect(result).to be_nil
     end
   end
 end

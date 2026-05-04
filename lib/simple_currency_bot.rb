@@ -40,8 +40,16 @@ module SimpleCurrencyBot
         send_help_message(bot, chat_id)
       when '/convert'
         start_conversion_process(bot, chat_id)
+      when '/rates'
+        send_rates_message(bot, chat_id)
       else
-        handle_conversion_input(bot, chat_id, text)
+        # Try to parse as direct conversion: "100 $ ₽"
+        parsed = parse_direct_conversion(text)
+        if parsed
+          perform_conversion(bot, chat_id, parsed)
+        else
+          handle_conversion_input(bot, chat_id, text)
+        end
       end
     end
 
@@ -49,18 +57,32 @@ module SimpleCurrencyBot
       chat_id = callback.message.chat.id
       data = callback.data
 
-      state = @user_states[chat_id] || {}
-
-      case state[:step]
-      when :waiting_for_from
-        state[:from] = data
-        state[:step] = :waiting_for_to
-        @user_states[chat_id] = state
-        send_currency_selection(bot, chat_id, "Выберите валюту, в которую конвертировать:", :to)
-      when :waiting_for_to
-        state[:to] = data
-        perform_conversion(bot, chat_id, state)
+      case data
+      when '/start'
         reset_user_state(chat_id)
+        send_welcome_message(bot, chat_id)
+      when '/help'
+        send_help_message(bot, chat_id)
+      when '/convert'
+        start_conversion_process(bot, chat_id)
+      when '/rates'
+        send_rates_message(bot, chat_id)
+      else
+        state = @user_states[chat_id] || {}
+
+        case state[:step]
+        when :waiting_for_from
+          state[:from] = data
+          state[:step] = :waiting_for_to
+          @user_states[chat_id] = state
+          send_currency_selection(bot, chat_id, "Выберите валюту, в которую конвертировать:", :to)
+        when :waiting_for_to
+          state[:to] = data
+          perform_conversion(bot, chat_id, state)
+          reset_user_state(chat_id)
+        else
+          bot.api.send_message(chat_id: chat_id, text: "❌ Неизвестная команда. Нажмите /convert для начала.")
+        end
       end
 
       bot.api.answer_callback_query(callback_query_id: callback.id)
@@ -69,6 +91,7 @@ module SimpleCurrencyBot
     def send_welcome_message(bot, chat_id)
       kb = [
         Telegram::Bot::Types::InlineKeyboardButton.new(text: '💱 Конвертировать валюту', callback_data: '/convert'),
+        Telegram::Bot::Types::InlineKeyboardButton.new(text: '📊 Показать курсы', callback_data: '/rates'),
         Telegram::Bot::Types::InlineKeyboardButton.new(text: '❓ Помощь', callback_data: '/help')
       ]
       markup = Telegram::Bot::Types::InlineKeyboardMarkup.new(inline_keyboard: kb)
@@ -93,21 +116,50 @@ module SimpleCurrencyBot
         *Команды:*
         • /start - начать заново
         • /convert - конвертировать валюту
+        • /rates - показать текущие курсы
         • /help - эта справка
 
         *Как конвертировать:*
-        1. Введите сумму (например: 100)
-        2. Выберите валюту из списка
-        3. Выберите валюту в которую конвертировать
+        1. Используйте быстрый формат: "100 $ ₽" (сумма валюта_из валюта_в)
+        2. Или пошагово: введите сумму, выберите валюты из списка
 
-        *Примеры:*
-        • /convert 100 USD RUB
-        • 500 EUR to GBP
+        *Примеры быстрого формата:*
+        • 100 $ ₽ (доллары в рубли)
+        • 50 € £ (евро в фунты)
+        • 1000 ¥ $ (йены в доллары)
+        • 200 USD EUR (коды валют тоже работают)
 
         Поддерживаемые валюты: USD, EUR, RUB, GBP, JPY, CAD, AUD, CHF и многие другие.
       TEXT
 
       bot.api.send_message(chat_id: chat_id, text: text, parse_mode: 'Markdown')
+    end
+
+    def send_rates_message(bot, chat_id)
+      rates_text = "📊 *Текущие курсы валют (относительно USD)*\n\n"
+
+      POPULAR_CURRENCIES.each do |currency|
+        if currency == 'USD'
+          rates_text += "1 USD = 1 USD\n"
+        else
+          begin
+            rate = SimpleCurrencyCacher.convert(1, from: 'USD', to: currency)
+            rates_text += "1 USD = #{rate.round(4)} #{currency}\n"
+          rescue => e
+            rates_text += "1 USD = ??? #{currency} (ошибка: #{e.message})\n"
+          end
+        end
+      end
+
+      rates_text += "\n*Обновлено:* #{Time.now.strftime('%d.%m.%Y %H:%M')}"
+
+      kb = [
+        Telegram::Bot::Types::InlineKeyboardButton.new(text: '🔄 Конвертировать валюту', callback_data: '/convert'),
+        Telegram::Bot::Types::InlineKeyboardButton.new(text: '🏠 Главное меню', callback_data: '/start')
+      ]
+      markup = Telegram::Bot::Types::InlineKeyboardMarkup.new(inline_keyboard: kb)
+
+      bot.api.send_message(chat_id: chat_id, text: rates_text, parse_mode: 'Markdown', reply_markup: markup)
     end
 
     def start_conversion_process(bot, chat_id)
@@ -187,6 +239,33 @@ module SimpleCurrencyBot
 
     def reset_user_state(chat_id)
       @user_states.delete(chat_id)
+    end
+
+    def parse_direct_conversion(text)
+      # Match patterns like "100 $ ₽" or "100 USD RUB"
+      match = text.match(/(\d+(?:\.\d+)?)\s*([A-Z]{3}|\$|€|₽|£|¥)\s*(?:to|in)?\s*([A-Z]{3}|\$|€|₽|£|¥)/i)
+      return nil unless match
+
+      amount = match[1].to_f
+      from_symbol = match[2].upcase
+      to_symbol = match[3].upcase
+
+      # Map symbols to currency codes
+      symbol_map = {
+        '$' => 'USD',
+        '€' => 'EUR',
+        '₽' => 'RUB',
+        '£' => 'GBP',
+        '¥' => 'JPY'
+      }
+
+      from = symbol_map[from_symbol] || from_symbol
+      to = symbol_map[to_symbol] || to_symbol
+
+      # Validate currencies
+      return nil unless POPULAR_CURRENCIES.include?(from) && POPULAR_CURRENCIES.include?(to)
+
+      { amount: amount, from: from, to: to }
     end
   end
 end
